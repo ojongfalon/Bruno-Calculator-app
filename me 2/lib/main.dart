@@ -1,6 +1,5 @@
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
-import 'dart:math' as math;
 
 void main() {
   WidgetsFlutterBinding.ensureInitialized();
@@ -93,6 +92,11 @@ class CalculatorLogic extends ChangeNotifier {
   }
 
   void _backspace() {
+    // Error is not a substring edit; reset like after a completed calc.
+    if (_display == 'Error') {
+      _clear();
+      return;
+    }
     if (_justCalculated) { _clear(); return; }
     if (_display.length <= 1 || (_display.length == 2 && _display.startsWith('-'))) {
       _display = '0';
@@ -102,6 +106,8 @@ class CalculatorLogic extends ChangeNotifier {
   }
 
   void _toggleSign() {
+    // Avoid mangling the literal "Error" string.
+    if (_display == 'Error') return;
     if (_display == '0') return;
     _display = _display.startsWith('-')
         ? _display.substring(1)
@@ -109,12 +115,16 @@ class CalculatorLogic extends ChangeNotifier {
   }
 
   void _percent() {
+    // Parse would treat Error as 0; ignore instead.
+    if (_display == 'Error') return;
     final val = double.tryParse(_display) ?? 0;
     _display = _formatNum(val / 100);
     _justCalculated = false;
   }
 
   void _addDecimal() {
+    // Digits replace Error via _addDigit; decimal needs the same guard.
+    if (_display == 'Error') return;
     if (_freshInput || _justCalculated) {
       _display = '0.';
       _freshInput = false;
@@ -145,15 +155,33 @@ class CalculatorLogic extends ChangeNotifier {
   }
 
   void _setOperator(String op) {
+    // No numeric operand while showing Error (avoids null ! on parse).
+    if (_display == 'Error') return;
     // chain operations
     if (_operator != null && !_freshInput) {
       _calculate(chaining: true);
+      // Chained ÷0 leaves Error; do not overwrite with a new op.
+      if (_display == 'Error') return;
     }
-    _firstNum   = double.tryParse(_display);
+    // Safer than _firstNum!: non-numeric display skips quietly.
+    final parsed = double.tryParse(_display);
+    if (parsed == null) return;
+    _firstNum   = parsed;
     _operator   = op;
     _expression = '${_formatNum(_firstNum!)} $op';
     _freshInput = true;
     _justCalculated = false;
+  }
+
+  // Dedicated reset so "Error" stays visible (_clear would show 0 again).
+  void _divisionByZero() {
+    _expression = '';
+    _result = '';
+    _firstNum = null;
+    _operator = null;
+    _freshInput = false;
+    _justCalculated = true;
+    _display = 'Error';
   }
 
   void _calculate({bool chaining = false}) {
@@ -165,7 +193,11 @@ class CalculatorLogic extends ChangeNotifier {
       case '−': res = _firstNum! - second; break;
       case '×': res = _firstNum! * second; break;
       case '÷':
-        if (second == 0) { _display = 'Error'; _clear(); return; }
+        // Old code set Error then [_clear], which reset display to 0.
+        if (second == 0) {
+          _divisionByZero();
+          return;
+        }
         res = _firstNum! / second;
         break;
       default: return;
@@ -474,11 +506,6 @@ class _CalcButtonState extends State<_CalcButton>
   @override
   void dispose() { _ctrl.dispose(); super.dispose(); }
 
-  void _handleTap() {
-    _ctrl.forward().then((_) => _ctrl.reverse());
-    widget.onTap();
-  }
-
   Color get _bgColor {
     if (widget.isActive) return AppColors.accent;
     switch (widget.type) {
@@ -492,7 +519,8 @@ class _CalcButtonState extends State<_CalcButton>
   Color get _fgColor {
     switch (widget.type) {
       case ButtonType.equals:   return Colors.white;
-      case ButtonType.operator: return AppColors.accent;
+      case ButtonType.operator:
+        return widget.isActive ? Colors.white : AppColors.accent;
       case ButtonType.function: return AppColors.textMuted;
       case ButtonType.number:   return AppColors.textPrimary;
     }
